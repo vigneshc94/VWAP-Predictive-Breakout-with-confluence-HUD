@@ -1,5 +1,8 @@
 
 
+# INDICATOR:
+---------------------
+
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Viggy02
 
@@ -356,3 +359,327 @@ if gapUp
 if gapDown
     gapBoxDown := box.new(left=bar_index, top=prevClose, right=bar_index + 1, bottom=open, border_color=color.red, bgcolor=color.new(color.red, 85))
 
+
+========================================================================================================================
+
+# STRATEGY: 
+---------------------
+
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Viggy02
+
+//@version=6
+strategy("VWAP Predictive Breakout Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+
+// === USER SETTINGS ===
+// These inputs allow you to customize volume, RSI, ADX, ATR, and candle behavior thresholds.
+// They control how the breakout conditions and trend environment are detected.
+// === INPUTS ===
+volMultiplier = input.float(1.5, title="Volume Spike Multiplier")
+bodyStrength = input.float(0.6, title="Min Body Size (as % of Range)")
+rsiPeriod = input.int(14, title="RSI Period")
+rsiUpper = input.int(65, title="Max RSI for Long")
+rsiLower = input.int(35, title="Min RSI for Short")
+
+adxLen = input.int(7, title="ADX Length")
+adxThreshold = input.int(18, title="ADX Trend Threshold")
+atrLen = input.int(7, title="ATR Length")
+emaFast = input.int(9, title="Fast EMA")
+emaSlow = input.int(21, title="Slow EMA")
+
+bbLen = input.int(20, title="Bollinger Band Length")
+bbMult = input.float(2.0, title="BB Multiplier")
+
+candleBodyMin = input.float(0.4, title="Min Body Size (as % of ATR)")
+wickRatioThreshold = input.float(1.5, title="Wick-to-Body Ratio Threshold")
+
+slMultiplier = input.float(1.0, title="Stop Loss (x ATR)")
+tpMultiplier = input.float(2.0, title="Take Profit (x ATR)")
+
+// === TIME FILTER ===
+isMarketHours = (hour == 9 and minute >= 45) or (hour > 9 and hour < 13) or (hour == 13 and minute <= 30)
+
+
+// === CORE INDICATOR CALCULATIONS ===
+// VWAP, volume averages, RSI behavior, and basic candle logic.
+// === INDICATORS ===
+vwap = ta.vwap
+volumeAvg = ta.sma(volume, 20)
+volSpike = volume > volumeAvg * input.float(1.2, title="Volume Spike Sensitivity")
+
+rsi = ta.rsi(close, rsiPeriod)
+rsiBull = rsi < rsiUpper and rsi > rsi[1]
+rsiBear = rsi > rsiLower and rsi < rsi[1]
+
+// Detects upward VWAP breakout
+crossUp = close > vwap and close[1] < vwap
+// Detects downward VWAP breakout
+crossDown = close < vwap and close[1] > vwap
+aboveConfirm = close > vwap and close[1] > vwap and close[2] > vwap
+belowConfirm = close < vwap and close[1] < vwap and close[2] < vwap
+
+// Bullish engulfing pattern (potential order block)
+bullEngulf = close > open and open < close[1] and close > open[1]
+// Bearish engulfing pattern (potential order block)
+bearEngulf = close < open and open > close[1] and close < open[1]
+
+var float obBullLow = na
+var float obBearHigh = na
+if bullEngulf
+    obBullLow := low
+if bearEngulf
+    obBearHigh := high
+
+atrOB = ta.atr(5)
+nearBullOB = not na(obBullLow) and (low < (obBullLow + atrOB))
+nearBearOB = not na(obBearHigh) and (high > (obBearHigh - atrOB))
+
+// Correct ADX calculation using standard method
+upMove = high - high[1]
+downMove = low[1] - low
+plusDM = (upMove > downMove and upMove > 0) ? upMove : 0
+minusDM = (downMove > upMove and downMove > 0) ? downMove : 0
+trur = ta.rma(ta.tr, adxLen)
+plusDI = 100 * ta.rma(plusDM, adxLen) / trur
+minusDI = 100 * ta.rma(minusDM, adxLen) / trur
+dx = 100 * math.abs(plusDI - minusDI) / (plusDI + minusDI)
+adx = ta.rma(dx, adxLen)
+
+
+atr = ta.atr(atrLen)
+ema1 = ta.ema(close, emaFast)
+ema2 = ta.ema(close, emaSlow)
+basis = ta.sma(close, bbLen)
+dev = bbMult * ta.stdev(close, bbLen)
+upperBB = basis + dev
+lowerBB = basis - dev
+bbWidth = upperBB - lowerBB
+
+bodySize = math.abs(close - open)
+upperWick = high - math.max(close, open)
+lowerWick = math.min(close, open) - low
+totalWick = upperWick + lowerWick
+wickToBodyRatio = totalWick / (bodySize + 0.001)
+strongCandle = bodySize > (atr * candleBodyMin)
+lowWickRatio = wickToBodyRatio < wickRatioThreshold
+cleanCandle = strongCandle and lowWickRatio
+
+emaDistanceThreshold = input.float(0.1, title="EMA Distance Sensitivity")
+// Measures distance between fast and slow EMAs to gauge trend strength
+emaDistance = math.abs(ema1 - ema2)
+// Trending condition combines ADX, EMA distance, and clean candle confirmation
+isTrending = adx > adxThreshold and emaDistance > atr * emaDistanceThreshold and cleanCandle
+isChoppy = not isTrending
+
+breakoutUp = isChoppy and close > upperBB and bbWidth > bbWidth[1]
+breakoutDown = isChoppy and close < lowerBB and bbWidth > bbWidth[1]
+
+//isWorthyBreakout = volSpike and cleanCandle and isTrending
+
+// Predictive signals require only 3 conditions (1, 3, 4)
+// Predicts early bullish breakout based on VWAP cross + RSI + OB zone
+predictUp = crossUp and rsiBull and nearBullOB and isMarketHours
+// Predicts early bearish breakout based on VWAP cross + RSI + OB zone
+predictDown = crossDown and rsiBear and nearBearOB and isMarketHours
+
+// === Early Momentum Context for Predictive Worthy Breakouts ===
+earlyTrend = adx > (adxThreshold * 0.6) and emaDistance > atr * 0.07
+earlyVolSpike = volume > volumeAvg * (volMultiplier * 0.6)
+potentialWorthyBreakout = cleanCandle and earlyVolSpike and earlyTrend and isMarketHours
+
+// === Predictive Worthy Breakouts (Enhanced with Candle Context) ===
+// Enhanced bullish signal with volume/trend context and clean candle body
+predictWorthyUp = predictUp and potentialWorthyBreakout and close > vwap and close > open and bodySize > 0.5 * (high - low) and isMarketHours
+// Enhanced bearish signal with volume/trend context and clean candle body
+predictWorthyDown = predictDown and potentialWorthyBreakout and isMarketHours
+
+// === VWAP Breakout Context ===
+healthyBreakoutUp = crossUp and isTrending and cleanCandle and volSpike and isMarketHours
+choppyBreakoutUp = crossUp and isChoppy and isMarketHours
+healthyBreakoutDown = crossDown and isTrending and cleanCandle and volSpike and isMarketHours
+choppyBreakoutDown = crossDown and isChoppy and close < vwap and close < open and bodySize > 0.5 * (high - low) and isMarketHours
+
+// === Multi-Timeframe Confirmation ===
+ema1HTF = request.security(syminfo.tickerid, "60", ta.ema(close, emaFast))
+ema2HTF = request.security(syminfo.tickerid, "60", ta.ema(close, emaSlow))
+isBullHTF = ema1HTF > ema2HTF
+
+
+// === STOP LOSS & TAKE PROFIT CALCULATION ===
+// SL/TP levels are set based on ATR and plotted as guides.
+// === Dynamic SL/TP ===
+//longSL = predictUp ? close - (atr * slMultiplier) : na
+//longTP = predictUp ? close + (atr * tpMultiplier) : na
+//shortSL = predictDown ? close + (atr * slMultiplier) : na
+//shortTP = predictDown ? close - (atr * tpMultiplier) : na
+
+// === Conservative Stop Loss and Trailing TP ===
+swingLow = ta.lowest(low, 5)
+swingHigh = ta.highest(high, 5)
+
+conservativeLongSL = predictWorthyUp ? swingLow - atr * 0.1 : na
+conservativeShortSL = predictWorthyDown ? swingHigh + atr * 0.1 : na
+
+var float trailLongTP = na
+var float trailShortTP = na
+
+if predictWorthyUp
+    trailLongTP := close + atr * 1.5
+else if predictWorthyDown
+    trailShortTP := close - atr * 1.5
+else
+    trailLongTP := na
+    trailShortTP := na
+
+
+// === INTER-TICKER VWAP CONFLUENCE ===
+// Check VWAP alignment for key tickers for context
+getVWAPInfo(sym) =>
+    _close = request.security(sym, timeframe.period, close)
+    _vwap = request.security(sym, timeframe.period, ta.vwap)
+    _prevClose = request.security(sym, timeframe.period, close[1])
+    brkUp = _prevClose < _vwap[1] and _close > _vwap
+    brkDown = _prevClose > _vwap[1] and _close < _vwap
+    isAbove = _close > _vwap
+    isBelow = _close < _vwap
+    [isAbove, isBelow, brkUp, brkDown]
+
+
+// === VWAP STATUS PER TICKER ===
+[nvdaAbove, nvdaBelow, nvdaBreakUp, nvdaBreakDown] = getVWAPInfo("NVDA")
+[aaplAbove, aaplBelow, aaplBreakUp, aaplBreakDown] = getVWAPInfo("AAPL")
+[tslaAbove, tslaBelow, tslaBreakUp, tslaBreakDown] = getVWAPInfo("TSLA")
+[amznAbove, amznBelow, amznBreakUp, amznBreakDown] = getVWAPInfo("AMZN")
+[metaAbove, metaBelow, metaBreakUp, metaBreakDown] = getVWAPInfo("META")
+[googlAbove, googlBelow, googlBreakUp, googlBreakDown] = getVWAPInfo("GOOGL")
+[msftAbove, msftBelow, msftBreakUp, msftBreakDown] = getVWAPInfo("MSFT")
+[uvxyAbove, uvxyBelow, uvxyBreakUp, uvxyBreakDown] = getVWAPInfo("UVXY")
+[spyAbove, spyBelow, spyBreakUp, spyBreakDown] = getVWAPInfo("SPY")
+[qqqAbove, qqqBelow, qqqBreakUp, qqqBreakDown] = getVWAPInfo("QQQ")
+
+getStatus(ab, bl, bu, bd) =>
+    base = ab ? "↑Above" : bl ? "↓Below" : "-"
+    breakoutNote = bu ? " (Breakout ↑)" : bd ? " (Breakout ↓)" : ""
+    base + breakoutNote
+
+// === Date and Time Header ===
+hour12 = hour % 12
+hourDisplay = hour12 == 0 ? 12 : hour12
+ampm = hour < 12 ? "AM" : "PM"
+header = "VWAP Status @ " +
+         str.tostring(year) + "-" +
+         str.tostring(month) + "-" +
+         str.tostring(dayofmonth) + " " +
+         str.tostring(hourDisplay, "00") + ":" +
+         str.tostring(minute, "00") + " " + ampm + "\n\n"
+
+// === Group Tick Symbols by Status ===
+aboveList = ""
+belowList = ""
+breakoutUpList = ""
+breakoutDownList = ""
+
+appendTicker(cond, list, name) =>
+    cond ? list + (str.length(list) > 0 ? ", " + name : name) : list
+
+// Build groups
+aboveList := appendTicker(nvdaAbove and not nvdaBreakUp and not nvdaBreakDown, aboveList, "NVDA")
+aboveList := appendTicker(aaplAbove and not aaplBreakUp and not aaplBreakDown, aboveList, "AAPL")
+aboveList := appendTicker(tslaAbove and not tslaBreakUp and not tslaBreakDown, aboveList, "TSLA")
+aboveList := appendTicker(amznAbove and not amznBreakUp and not amznBreakDown, aboveList, "AMZN")
+aboveList := appendTicker(metaAbove and not metaBreakUp and not metaBreakDown, aboveList, "META")
+aboveList := appendTicker(googlAbove and not googlBreakUp and not googlBreakDown, aboveList, "GOOGL")
+aboveList := appendTicker(msftAbove and not msftBreakUp and not msftBreakDown, aboveList, "MSFT")
+aboveList := appendTicker(uvxyAbove and not uvxyBreakUp and not uvxyBreakDown, aboveList, "UVXY")
+aboveList := appendTicker(spyAbove and not spyBreakUp and not spyBreakDown, aboveList, "SPY")
+aboveList := appendTicker(qqqAbove and not qqqBreakUp and not qqqBreakDown, aboveList, "QQQ")
+
+belowList := appendTicker(nvdaBelow and not nvdaBreakDown and not nvdaBreakUp, belowList, "NVDA")
+belowList := appendTicker(aaplBelow and not aaplBreakDown and not aaplBreakUp, belowList, "AAPL")
+belowList := appendTicker(tslaBelow and not tslaBreakDown and not tslaBreakUp, belowList, "TSLA")
+belowList := appendTicker(amznBelow and not amznBreakDown and not amznBreakUp, belowList, "AMZN")
+belowList := appendTicker(metaBelow and not metaBreakDown and not metaBreakUp, belowList, "META")
+belowList := appendTicker(googlBelow and not googlBreakDown and not googlBreakUp, belowList, "GOOGL")
+belowList := appendTicker(msftBelow and not msftBreakDown and not msftBreakUp, belowList, "MSFT")
+belowList := appendTicker(uvxyBelow and not uvxyBreakDown and not uvxyBreakUp, belowList, "UVXY")
+belowList := appendTicker(spyBelow and not spyBreakDown and not spyBreakUp, belowList, "SPY")
+belowList := appendTicker(qqqBelow and not qqqBreakDown and not qqqBreakUp, belowList, "QQQ")
+
+breakoutUpList := appendTicker(nvdaBreakUp, breakoutUpList, "NVDA")
+breakoutUpList := appendTicker(aaplBreakUp, breakoutUpList, "AAPL")
+breakoutUpList := appendTicker(tslaBreakUp, breakoutUpList, "TSLA")
+breakoutUpList := appendTicker(amznBreakUp, breakoutUpList, "AMZN")
+breakoutUpList := appendTicker(metaBreakUp, breakoutUpList, "META")
+breakoutUpList := appendTicker(googlBreakUp, breakoutUpList, "GOOGL")
+breakoutUpList := appendTicker(msftBreakUp, breakoutUpList, "MSFT")
+breakoutUpList := appendTicker(uvxyBreakUp, breakoutUpList, "UVXY")
+breakoutUpList := appendTicker(spyBreakUp, breakoutUpList, "SPY")
+breakoutUpList := appendTicker(qqqBreakUp, breakoutUpList, "QQQ")
+
+breakoutDownList := appendTicker(nvdaBreakDown, breakoutDownList, "NVDA")
+breakoutDownList := appendTicker(aaplBreakDown, breakoutDownList, "AAPL")
+breakoutDownList := appendTicker(tslaBreakDown, breakoutDownList, "TSLA")
+breakoutDownList := appendTicker(amznBreakDown, breakoutDownList, "AMZN")
+breakoutDownList := appendTicker(metaBreakDown, breakoutDownList, "META")
+breakoutDownList := appendTicker(googlBreakDown, breakoutDownList, "GOOGL")
+breakoutDownList := appendTicker(msftBreakDown, breakoutDownList, "MSFT")
+breakoutDownList := appendTicker(uvxyBreakDown, breakoutDownList, "UVXY")
+breakoutDownList := appendTicker(spyBreakDown, breakoutDownList, "SPY")
+breakoutDownList := appendTicker(qqqBreakDown, breakoutDownList, "QQQ")
+
+// === Final HUD Text ===
+labelText = header
+labelText += (str.length(aboveList) > 0 ? "Above VWAP:\n" + aboveList + "\n\n" : "")
+labelText += (str.length(belowList) > 0 ? "Below VWAP:\n" + belowList + "\n\n" : "")
+labelText += (str.length(breakoutUpList) > 0 ? "Breakout Up:\n" + breakoutUpList + "\n\n" : "")
+labelText += (str.length(breakoutDownList) > 0 ? "Breakout Down:\n" + breakoutDownList + "\n" : "")
+
+// === HUD Placement Above Price ===
+labelY = ta.highest(high, 300) + atr * 5
+
+var label confluenceLabel = na
+if bar_index != bar_index[1] or crossUp or crossDown
+    if not na(confluenceLabel)
+        label.delete(confluenceLabel)
+    confluenceLabel := label.new(x=bar_index,y=labelY,yloc=yloc.price,xloc=xloc.bar_index,style=label.style_label_left,text=labelText,textcolor=color.white,size=size.normal,color=color.gray,tooltip="VWAP Confluence HUD")
+
+
+// === VISUAL SIGNALS ON CHART ===
+// These plots show VWAP, breakout signals, and dynamic SL levels.
+// === PLOTS ===
+//plot(vwap, title="VWAP", color=color.gray, linewidth=2)
+//plot(basis, title="Middle BB", color=color.blue, linewidth=1)
+
+
+// === ENHANCEMENT 1: Real-Time Momentum Confirmation ===
+priceAccel = close - close[1]
+momentumConfirmUp = priceAccel > ta.ema(priceAccel, 5)
+momentumConfirmDown = priceAccel < ta.ema(priceAccel, 5)
+
+// === ENHANCEMENT 2: Wick Trap Avoidance ===
+upperWickTrap = upperWick > bodySize * 1.2
+lowerWickTrap = lowerWick > bodySize * 1.2
+
+// === Enhanced Predictive Worthy Signals with Filters ===
+predictWorthyUp := predictWorthyUp and momentumConfirmUp and not upperWickTrap and isMarketHours and healthyBreakoutUp 
+predictWorthyDown := predictWorthyDown and momentumConfirmDown and not lowerWickTrap and isMarketHours and healthyBreakoutDown
+
+
+
+// === Strategy Execution ===
+if predictWorthyUp
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP/SL Long", from_entry="Long", stop=conservativeLongSL, limit=trailLongTP)
+
+if predictWorthyDown
+    strategy.entry("Short", strategy.short)
+    strategy.exit("TP/SL Short", from_entry="Short", stop=conservativeShortSL, limit=trailShortTP)
+
+// === Plotting ===
+plotshape(predictWorthyUp, location=location.belowbar, style=shape.labelup, color=color.teal, size=size.small, title="Predict Worthy Long")
+plotshape(predictWorthyDown, location=location.abovebar, style=shape.labeldown, color=color.maroon, size=size.small, title="Predict Worthy Short")
+plot(conservativeLongSL, title="Conservative Long SL", color=color.orange, style=plot.style_linebr)
+plot(conservativeShortSL, title="Conservative Short SL", color=color.orange, style=plot.style_linebr)
+plotshape(not na(trailLongTP), location=location.abovebar, style=shape.triangleup, color=color.lime, size=size.small, title="Trailing TP Long Signal")
+plotshape(not na(trailShortTP), location=location.belowbar, style=shape.triangledown, color=color.fuchsia, size=size.small, title="Trailing TP Short Signal")
